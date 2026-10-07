@@ -152,21 +152,21 @@ jobs:
             echo "Attempting to fetch default config: ${ZIZMOR_CONFIG_BUCKET}/default.yaml"
             # REPLICA CHANGE: instead of failing, write a local stub so the rest of the
             # pipeline (yq steps, artifact upload) can be measured.
-            cat > zizmor-config.yaml <<'STUB'
-rules:
-  template-injection:
-    remap:
-      severity: mandatory
-  artipacked:
-    remap:
-      severity: mandatory
-    disable: true
-  excessive-permissions:
-    remap:
-      severity: high
-google:
-  enforce: false
-STUB
+            printf '%s\n' \
+              'rules:' \
+              '  template-injection:' \
+              '    remap:' \
+              '      severity: mandatory' \
+              '  artipacked:' \
+              '    remap:' \
+              '      severity: mandatory' \
+              '    disable: true' \
+              '  excessive-permissions:' \
+              '    remap:' \
+              '      severity: high' \
+              'google:' \
+              '  enforce: false' \
+              > zizmor-config.yaml
             echo "DEMO: wrote local stub standing in for ${ZIZMOR_CONFIG_BUCKET}/default.yaml"
           fi
       - name: 'Identify mandatory checks'
@@ -270,9 +270,7 @@ STUB
           echo "DEMO: would run ghcr.io/zizmorcore/zizmor:${ZIZMOR_VERSION}@${ZIZMOR_DOCKER_DIGEST} on: ${FILES_ARR[*]}"
           # REPLICA CHANGE: the two `docker run` zizmor invocations (original :182-211) are
           # replaced by a stub SARIF so the artifact plumbing can be measured cheaply.
-          cat > zizmor.sarif.json <<'SARIF'
-{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"zizmor-replica-stub"}},"results":[]}]}
-SARIF
+          printf '%s\n' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"zizmor-replica-stub"}},"results":[]}]}' > zizmor.sarif.json
           echo "offline=false" >> "$GITHUB_OUTPUT"
       - name: 'Enrich SARIF with GitHub metadata'
         shell: 'bash'

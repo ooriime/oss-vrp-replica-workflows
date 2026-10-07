@@ -1,0 +1,171 @@
+# REPLICA PROBE (turn 12) - write side of the object-key-truncation finding.
+#
+# Question: if the attacker overwrites a repository's configuration object with the
+# content that the vulnerable workflow uploads - `enriched.sarif.json`, a SARIF document -
+# what do Google's own config consumers then do with it?
+#
+# This job runs Google's VERBATIM yq commands, from
+#   google-gh-automation/workflows .github/workflows/github_actions_scan.yml @ 22b63c6
+#   :114  Identify mandatory checks
+#   :121  Identify enforcement status checks
+#   :130  Remove non-standard google key
+#   :134  Rewrite mandatory to high in config
+# against (A) a legitimate config and (B) a SARIF document, and it also asks zizmor itself,
+# at the digest Google pins, whether it accepts a SARIF document as its --config.
+#
+# Nothing here contacts Google. Everything is computed on the runner.
+
+name: 'Write-side probe: a SARIF document used as the zizmor config'
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: 'read'
+    steps:
+      - name: 'Checkout (this repository, ours)'
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # ratchet:actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: 'Build the two documents under test'
+        shell: 'bash'
+        run: |
+          # (A) a legitimate zizmor config, the control
+          printf '%s\n' \
+            'rules:' \
+            '  template-injection:' \
+            '    remap:' \
+            '      severity: mandatory' \
+            '  artipacked:' \
+            '    remap:' \
+            '      severity: mandatory' \
+            '  excessive-permissions:' \
+            '    remap:' \
+            '      severity: high' \
+            'google:' \
+            '  enforce: true' \
+            > legit-config.yaml
+
+          # (B) a document with exactly the shape of `enriched.sarif.json`: zizmor's SARIF
+          # output after the jq enrichment of :233-253. This is the content the vulnerable
+          # upload would write over the configuration object.
+          cat > sarif-as-config.yaml <<'SARIFEOF'
+          {"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"zizmor","rules":[{"id":"zizmorcore/template-injection"}]}},"results":[{"ruleId":"zizmorcore/template-injection","level":"error","message":{"text":"attacker-chosen finding text"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":".github/workflows/x.yml"},"region":{"startLine":1}}}]}],"versionControlProvenance":[{"repositoryUri":"https://github.com/attacker/repo","revisionId":"0000000000000000000000000000000000000000","properties":{"github_repository_id":1,"github_owner_id":1}}],"invocations":[{"executionSuccessful":true,"properties":{"execution_id":"https://github.com/attacker/repo/actions/runs/1/attempts/1","offline":false}}]}]}
+          SARIFEOF
+
+          echo "=== top-level keys of the SARIF document, as yq sees them ==="
+          yq eval 'keys' -o json --indent 0 sarif-as-config.yaml
+          echo "=== is there a top-level .rules key? ==="
+          yq eval 'has("rules")' sarif-as-config.yaml
+
+      - name: 'Run the four VERBATIM Google config steps against both documents'
+        shell: 'bash'
+        env:
+          ZIZMOR_ENFORCE: 'false'   # what :24 resolves to when the caller passes nothing
+        run: |
+          run_pipeline() {
+            local label="$1" f="$2"
+            echo "################ ${label} : ${f} ################"
+            cp "$f" zizmor-config.yaml
+
+            echo "--- google :114  Identify mandatory checks ---"
+            set +e
+            MANDATORY_LIST=$(yq eval '[.rules | to_entries | .[] | select(.value.remap.severity == "mandatory" and .value.disable != true) | .key]' -o json --indent 0 zizmor-config.yaml)
+            rc=$?; set -e
+            echo "exit=${rc}  mandatory-checks=${MANDATORY_LIST}"
+
+            echo "--- google :120-126  Identify enforcement status checks ---"
+            FINAL_ENFORCE="${ZIZMOR_ENFORCE}"
+            set +e
+            CONFIG_ENFORCE="$(yq eval '.google.enforce' zizmor-config.yaml)"
+            rc=$?; set -e
+            if [[ "${CONFIG_ENFORCE}" = "true" || "${CONFIG_ENFORCE}" = "false" ]]; then
+              echo "Using enforcment value from config: ${CONFIG_ENFORCE}"
+              FINAL_ENFORCE="${CONFIG_ENFORCE}"
+            fi
+            echo "exit=${rc}  .google.enforce='${CONFIG_ENFORCE}'  ->  enforce=${FINAL_ENFORCE}"
+
+            echo "--- google :130  Remove non-standard google key ---"
+            set +e; yq 'del(.google)' -i zizmor-config.yaml; echo "exit=$?"; set -e
+
+            echo "--- google :134  Rewrite mandatory to high in config ---"
+            set +e; yq '(.rules.[] | select(.remap.severity == "mandatory") | .remap.severity) = "high"' -i zizmor-config.yaml; echo "exit=$?"; set -e
+
+            echo "--- resulting zizmor-config.yaml ---"
+            cat zizmor-config.yaml
+            echo
+            cp zizmor-config.yaml "processed-${label}.yaml"
+          }
+
+          run_pipeline "A-legit"      legit-config.yaml   2>&1 | tee probe-A-legit.txt
+          run_pipeline "B-sarif"      sarif-as-config.yaml 2>&1 | tee probe-B-sarif.txt
+
+      - name: 'Does zizmor itself accept a SARIF document as --config?'
+        shell: 'bash'
+        continue-on-error: true
+        env:
+          ZIZMOR_VERSION: '1.25.2'
+          ZIZMOR_DOCKER_DIGEST: 'sha256:14ea7f5cc7c67933394a35b5a38a277397818d232602635edb2010b313afb110'
+        run: |
+          mkdir -p probe-ws/.github/workflows
+          printf '%s\n' 'on: push' 'jobs:' '  j:' '    runs-on: ubuntu-latest' '    steps:' '      - run: echo hi' \
+            > probe-ws/.github/workflows/x.yml
+          cp processed-A-legit.yaml probe-ws/legit.yaml
+          cp sarif-as-config.yaml   probe-ws/sarif.yaml
+
+          try_config() {
+            local label="$1" cfg="$2"
+            echo "################ zizmor --config ${cfg} (${label}) ################"
+            set +e
+            docker run --rm \
+              --volume "${PWD}/probe-ws:/workspace:ro" \
+              --workdir "/workspace" \
+              "ghcr.io/zizmorcore/zizmor:${ZIZMOR_VERSION}@${ZIZMOR_DOCKER_DIGEST}" \
+              --config "/workspace/${cfg}" \
+              --format sarif \
+              --no-ignores \
+              -- .github/workflows/x.yml > "zizmor-${label}.sarif.json" 2> "zizmor-${label}.err"
+            echo "exit=$?"
+            set -e
+            echo "--- stderr ---"; cat "zizmor-${label}.err"
+            echo "--- stdout top-level keys ---"; jq -c 'keys' "zizmor-${label}.sarif.json" 2>/dev/null || echo "(no parseable stdout)"
+          }
+
+          try_config legit legit.yaml 2>&1 | tee probe-C-zizmor-legit.txt
+          try_config sarif sarif.yaml 2>&1 | tee probe-D-zizmor-sarif.txt
+
+      - name: 'Publish probe output'
+        if: 'always()'
+        shell: 'bash'
+        run: |
+          {
+            echo "## Write-side probe"
+            for f in probe-A-legit.txt probe-B-sarif.txt probe-C-zizmor-legit.txt probe-D-zizmor-sarif.txt; do
+              [ -f "$f" ] || continue
+              echo "### $f"
+              echo '```'
+              cat "$f"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 'Upload probe output'
+        if: 'always()'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # ratchet:actions/upload-artifact@v7
+        with:
+          name: 'writeside-probe'
+          path: |
+            probe-*.txt
+            processed-*.yaml
+            legit-config.yaml
+            sarif-as-config.yaml
+            zizmor-*.sarif.json
+            zizmor-*.err
+          if-no-files-found: 'warn'
+          retention-days: 1

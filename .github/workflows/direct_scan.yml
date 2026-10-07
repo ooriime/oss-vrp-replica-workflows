@@ -1,0 +1,55 @@
+# DIRECT configuration for DEMONSTRATION 1(b).
+# Same OIDC capture content as the privileged 'zizmor-config' job of the replica of
+# google-gh-automation/workflows .github/workflows/github_actions_scan.yml
+# @ 22b63c643fbe7b395b00cc3952ab552decc586c7, but executed DIRECTLY in the repository that
+# hosts it instead of being reached through `workflow_call`.
+# Nothing here contacts Google. The provider string is fake.
+
+name: 'GitHub Actions Scan (direct configuration)'
+
+on:
+  pull_request:
+
+permissions: {}
+
+env:
+  WIF_PROVIDER: 'projects/000000000000/locations/global/workloadIdentityPools/replica-fake-pool/providers/replica-fake-provider'
+
+jobs:
+  zizmor-config:
+    runs-on: 'ubuntu-latest'
+    permissions:
+      id-token: 'write'
+    steps:
+      - name: 'Authenticate to GCP (REPLICA: local OIDC claim capture, no exchange)'
+        id: 'gcp-auth'
+        shell: 'bash'
+        env:
+          WIF_PROVIDER_RESOLVED: '${{ env.WIF_PROVIDER }}'
+          CAPTURE_LABEL: 'direct-zizmor-config'
+        run: |
+          echo "DEMO: would authenticate to workload_identity_provider='${WIF_PROVIDER_RESOLVED}'"
+          # --- REPLICA INSTRUMENTATION: local OIDC claim capture (DEMONSTRATION 1) ---
+          # Requests the GitHub-issued OIDC token for THIS run via the documented
+          # ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN pair, decodes the
+          # payload LOCALLY with jq, and prints only the seven claims under test.
+          # The raw JWT is never printed, never stored and never sent anywhere.
+          RESP="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=replica-fidelity-harness")"
+          JWT="$(printf '%s' "${RESP}" | jq -r '.value')"
+          PAYLOAD="$(printf '%s' "${JWT}" | cut -d. -f2)"
+          case $(( ${#PAYLOAD} % 4 )) in
+            2) PAYLOAD="${PAYLOAD}==" ;;
+            3) PAYLOAD="${PAYLOAD}=" ;;
+          esac
+          printf '%s' "${PAYLOAD}" | tr '_-' '/+' | base64 -d \
+            | jq --arg label "${CAPTURE_LABEL}" '{capture_label: $label, sub, repository, repository_owner, repository_owner_id, workflow_ref, job_workflow_ref, job_workflow_sha}' \
+            | tee "oidc-claims-${CAPTURE_LABEL}.json"
+          unset RESP JWT PAYLOAD
+      - name: 'REPLICA INSTRUMENTATION: publish captured OIDC claims'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # ratchet:actions/upload-artifact@v7
+        with:
+          name: 'oidc-claims-direct-zizmor-config'
+          path: 'oidc-claims-direct-zizmor-config.json'
+          if-no-files-found: 'error'
+          retention-days: 1

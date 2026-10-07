@@ -114,6 +114,15 @@ jobs:
             | jq --arg label "${CAPTURE_LABEL}" '{capture_label: $label, sub, repository, repository_owner, repository_owner_id, workflow_ref, job_workflow_ref, job_workflow_sha}' \
             | tee "oidc-claims-${CAPTURE_LABEL}.json"
           unset RESP JWT PAYLOAD
+          # Mirror the result into the job summary so it is readable WITHOUT signing in
+          # to GitHub (Actions logs are not public; job summaries are).
+          {
+            echo "### OIDC claims captured in \`${CAPTURE_LABEL}\`"
+            echo
+            echo '```json'
+            cat "oidc-claims-${CAPTURE_LABEL}.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           # REPLICA CHANGE: mirrors google-github-actions/auth @ c200f3691d83b41bf9bbd8638997a462592937ed,
           # src/main.ts:233-234, which calls setSecret(authToken) before setOutput('auth_token', ...).
           # The value is generated at run time (so it is absent from this file) and registered as a
@@ -247,6 +256,19 @@ jobs:
           echo "DEMO guard: github.workflow_ref                      = '${WORKFLOW_REF}'"
           echo "DEMO guard: github.repository                        = '${REPOSITORY}'"
           echo "DEMO guard: branch B  pull_request_target && !startsWith = ${BRANCH_B}"
+          {
+            echo "### Demonstration 4 - guard that admitted \`zizmor-scan\`"
+            echo
+            echo "| expression | value |"
+            echo "|---|---|"
+            echo "| \`needs.check-changes.outputs.files\` | \`${FILES}\` |"
+            echo "| \`inputs.wif_provider\` | \`${INPUT_WIF_PROVIDER}\` |"
+            echo "| branch A: \`inputs.wif_provider != ''\` | **${BRANCH_A}** |"
+            echo "| \`github.event_name\` | \`${EVENT_NAME}\` |"
+            echo "| \`github.workflow_ref\` | \`${WORKFLOW_REF}\` |"
+            echo "| \`github.repository\` | \`${REPOSITORY}\` |"
+            echo "| branch B: \`pull_request_target && !startsWith(...)\` | **${BRANCH_B}** |"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: 'Checkout source'
         uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # ratchet:actions/checkout@v6
         with:
@@ -349,6 +371,15 @@ jobs:
             | jq --arg label "${CAPTURE_LABEL}" '{capture_label: $label, sub, repository, repository_owner, repository_owner_id, workflow_ref, job_workflow_ref, job_workflow_sha}' \
             | tee "oidc-claims-${CAPTURE_LABEL}.json"
           unset RESP JWT PAYLOAD
+          # Mirror the result into the job summary so it is readable WITHOUT signing in
+          # to GitHub (Actions logs are not public; job summaries are).
+          {
+            echo "### OIDC claims captured in \`${CAPTURE_LABEL}\`"
+            echo
+            echo '```json'
+            cat "oidc-claims-${CAPTURE_LABEL}.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           # REPLICA CHANGE: mirrors google-github-actions/auth @ c200f3691d83b41bf9bbd8638997a462592937ed,
           # src/main.ts:233-234, which calls setSecret(authToken) before setOutput('auth_token', ...).
           # The value is generated at run time (so it is absent from this file) and registered as a
@@ -379,6 +410,16 @@ jobs:
           gcs_upload \
           enriched.sarif.json \
           "${ZIZMOR_RESULT_BUCKET}/${GITHUB_REPOSITORY}/${GITHUB_PULL_REQUEST_NUMBER}_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}.sarif.json"
+
+          {
+            echo "### Demonstration 4 - upload destination, supplied by the CALLER"
+            echo
+            echo "| source | value |"
+            echo "|---|---|"
+            echo "| \`inputs.zizmor_result_bucket\` (caller-supplied) | \`${INPUT_RESULT_BUCKET}\` |"
+            echo "| \`ZIZMOR_RESULT_BUCKET\` (resolved env) | \`${ZIZMOR_RESULT_BUCKET}\` |"
+            echo "| destination path (curl replaced by echo) | \`${ZIZMOR_RESULT_BUCKET}/${GITHUB_REPOSITORY}/${GITHUB_PULL_REQUEST_NUMBER}_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}.sarif.json\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   zizmor-output:
     needs: ['check-changes', 'zizmor-scan', 'zizmor-config']
